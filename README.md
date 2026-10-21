@@ -1,50 +1,44 @@
-# qq-group-agent
+# QQ 群 AI 机器人 低成本落地手册
 
-把 DeepSeek 接进 QQ 群的自托管机器人：读全群消息、被 @ 会答、没人接的问句它会接一句，并且**每天的花费有硬上限**。
+把 DeepSeek 接进 QQ 群，读全群消息、能回答问题、能择机插话，并且把花费压在每月个位数——用现成组件拼出来，不写框架代码。
 
-面向的场景是一个人不多的小圈子群：想让 AI 在里面像个有点分寸的群友，而不是一个会默默把账单跑掉的订阅服务。
+这个仓不是另一个机器人项目，而是一份**可复现的部署与调参记录**：每个组件为什么选它、每个数字从哪来、哪些结论还没验证。
 
-## 它解决什么
+## 结论先行
 
-大多数「群聊机器人」项目缺的不是能力，而是成本控制。群消息是无限的，模型是按 token 计费的，两者之间没有闸门，结果就是要么不敢开、要么月底看到账单。
+| 层 | 选型 | 代价 |
+|---|---|---|
+| 协议端 | NapCat（OneBot v11，扫小号登录） | 机房 IP 有风控，掉号要换 |
+| 平台层 | AstrBot（aiocqhttp 适配器） | 无 |
+| 模型 | DeepSeek `deepseek-flash`，非思考模式 | 需显式关闭思考模式，否则输出翻几倍 |
+| 限额 | `astrbot_plugin_token_controller` | 按 token 而非金额，见「预算口径」的换算 |
+| 统计 | AstrBot 自带 `/stats` | 四路拆分：输入(缓存) / 输入(其他) / 输出 / 总量 |
+| 服务器 | 2核2G 轻量（¥38–68/年档） | 不用函数计算，理由见 DECISIONS |
 
-这个项目的做法是：**消息全量进本地库（免费），只把「该不该说话」的判断和「真正要说的话」交给模型**。判断走批量、说话走短上下文，于是开销由「有多少人真的需要回答」决定，而不是由「群里有多少条消息」决定。
+一个日均 300 条消息、每天约 20 次回话的小群，模型月支出约 2 元，加服务器约 8 元/月。
 
-按一个日均 300 条消息、每天 20 次回话的小群估算，模型月支出约 2 元。
+## 快速开始
 
-## 核心机制
+1. 买一台 2核2G 轻量服务器，装 Docker。
+2. `deploy/docker-compose.example.yml` 起两个容器：`napcat` + `astrbot`。
+3. 打开 NapCat WebUI 扫码登录小号，配置 OneBot 反向 WebSocket 指向 AstrBot 的 `6199` 端口。
+4. AstrBot 里加平台「QQ（aiocqhttp）」，主机填 `0.0.0.0`、端口 `6199`、token 与 NapCat 一致。
+5. 把机器人拉进群，@ 一次确认通。
+6. 装 `token_controller` 插件，配 `limited_groups` 与 `daily_token_limit`。
 
-**读全群，但按需取**
-所有群消息落 sqlite 并建全文索引，一次模型调用都不产生。回答时才取：触发点前后若干条 + 全文检索命中的历史 + 群滚动摘要。
+详细步骤与验收清单见 [docs/SETUP.md](docs/SETUP.md)。
 
-**批量判定代替逐条判定**
-每累计一批消息，打包问一次「这里面哪些需要回答」，而不是每条消息都问一次。这一步是成本相差一个数量级的关键。
+## 仓内文档
 
-**按钱卡预算，不按 token 数卡**
-同样 100 万 token，缓存命中、未命中、输出三档单价相差最高 200 倍，按 token 数设上限会把便宜的调用先拦掉。所以额度以折算金额计，token 只作为明细记录。
+- [docs/SETUP.md](docs/SETUP.md) — 从空服务器到群里能回话，含验收清单与故障对照
+- [docs/BUDGET.md](docs/BUDGET.md) — 预算口径：单价、时段价差、token 与金额怎么换算、怎么对账
+- [docs/DECISIONS.md](docs/DECISIONS.md) — 选型记录：为什么不用函数计算、为什么不自研框架也不自研插件
 
-**五档熔断，不是一刀切**
-用量到 60%、80%、100%、120% 各降一档：先砍最贵的联网检索，再砍上下文长度，再收窄到只回 @，最后才静默。留 20% 缓冲是因为卡在 100% 会让最后阶段连「额度用完了」都发不出去。
+## 一句话经验
 
-**重启不绕过预算**
-用量计数落 sqlite，进程启动先载入当日已用。
-
-## 状态
-
-设计与决策已完成，实现进行中。设计文档见 [docs/SPEC.md](docs/SPEC.md)，其中「未验证」一节列的是尚未实测、不能当作已知的项——最大的一条是「小号在机房 IP 上能否长期在线」。
-
-## 结构
-
-```
-src/        机器人本体
-deploy/     部署示例
-docs/       设计文档
-```
+群消息是无限的，模型是按 token 计费的，两者之间必须有闸门。这个闸门最好由「该不该调用」控制，而不是由「说了多少字」控制——所以批量判定、@ 触发、上下文裁剪三件事，比换便宜模型更能省钱。
 
 ## 许可
 
-AGPL-3.0。自托管使用没有额外限制；如果修改后作为网络服务提供给别人用，需要公开修改后的源码。
-
----
-
-Self-hosted QQ group agent backed by DeepSeek, with a hard daily spend cap. Reads the whole group, answers when mentioned, and only speaks up on unanswered questions. Cost control is the design center: messages are archived locally for free, model calls are gated by a batched "should I reply" decision.
+文档与示例代码：AGPL-3.0。
+NapCat、AstrBot、token_controller 各自遵循其自身许可。

@@ -1,0 +1,25 @@
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest   # 跑通后改成具体版本号，别长期用 latest
+    container_name: napcat
+    restart: unless-stopped
+    environment:
+      - NAPCAT_GID=0
+      - NAPCAT_UID=0
+    ports:
+      - "127.0.0.1:6099:6099"   # WebUI 只给本机，需要远程访问时用 SSH 端口转发
+    volumes:
+      - ./data/napcat:/app/napcat/config
+      - ./data/qq:/app/.config/QQ
+
+  astrbot:
+    image: soulter/astrbot:latest          # 同上，跑通后固定版本
+    container_name: astrbot
+    restart: unless-stopped
+    ports:
+      - "6185:6185"             # 管理面板
+      - "6199:6199"             # OneBot 反向 WebSocket
+    volumes:
+      - ./data/astrbot:/AstrBot/data
+    depends_on:
+      - napcat
